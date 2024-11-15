@@ -107,6 +107,7 @@ def main():
     parser.add_argument("--scenario", default="contest")
     parser.add_argument("--timesteps", type=int, default=2_000_000)
     parser.add_argument("--num_envs", type=int, default=4)
+    parser.add_argument("--checkpoint", default=None, help="Path to checkpoint to resume training")
     args = parser.parse_args()
 
     # Create output directories
@@ -138,34 +139,36 @@ def main():
         n_eval_episodes=5,
         deterministic=True
     )
-
+    if args.checkpoint is not None:
+        model = DQN.load(args.checkpoint, env=env)
+    else:
     # Initialize DQN model
-    model = DQN(
-        policy="CnnPolicy",
-        env=env,
-        learning_rate=2.5e-4,
-        buffer_size=60000,
-        learning_starts=10000,
-        batch_size=32,
-        tau=1.0,
-        gamma=0.99,
-        train_freq=4,
-        gradient_steps=1,
-        target_update_interval=1000,
-        exploration_fraction=0.1,
-        exploration_initial_eps=1.0,
-        exploration_final_eps=0.01,
-        max_grad_norm=10,
-        verbose=1,
-        tensorboard_log="./logs/tensorboard/"
-    )
+        model = DQN(
+            policy="CnnPolicy",
+            env=env,
+            learning_rate=2.5e-4,
+            buffer_size=60000,
+            learning_starts=10000,
+            batch_size=32,
+            tau=1.0,
+            gamma=0.99,
+            train_freq=4,
+            gradient_steps=1,
+            target_update_interval=1000,
+            exploration_fraction=0.1,
+            exploration_initial_eps=1.0,
+            exploration_final_eps=0.01,
+            max_grad_norm=10,
+            verbose=1,
+            tensorboard_log="./logs/tensorboard/"
+        )
 
-    # Train the model
-    model.learn(
-        total_timesteps=args.timesteps,
-        callback=[checkpoint_callback, eval_callback],
-        log_interval=1000
-    )
+        # Train the model
+        model.learn(
+            total_timesteps=args.timesteps,
+            callback=[checkpoint_callback, eval_callback],
+            log_interval=100
+        )
 
     # Save the final model
     model.save("./models/sonic_dqn_final")
