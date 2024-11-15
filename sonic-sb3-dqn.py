@@ -79,7 +79,7 @@ class RewardScaler(gym.RewardWrapper):
 def make_retro(*, game, state=None, max_episode_steps=4500, **kwargs):
     if state is None:
         state = retro.State.DEFAULT
-    env = retro.make(game, state, **kwargs)
+    env = retro.make(game, state, **kwargs, render_mode=None)
     env = StochasticFrameSkip(env, n=4, stickprob=0.25)
     if max_episode_steps is not None:
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
@@ -127,7 +127,7 @@ def main():
 
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
-        save_freq=50000,
+        save_freq=50000 // args.num_envs,
         save_path="./models/",
         name_prefix="sonic_dqn"
     )
@@ -164,7 +164,7 @@ def main():
             verbose=1,
             tensorboard_log="./logs/tensorboard/"
         )
-        mode.to(device)
+        model.to(device)
         # Train the model
         model.learn(
             total_timesteps=args.timesteps,
