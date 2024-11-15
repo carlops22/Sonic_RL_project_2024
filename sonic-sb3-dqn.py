@@ -4,7 +4,7 @@ import numpy as np
 from gymnasium.wrappers.time_limit import TimeLimit
 from stable_baselines3 import DQN
 from stable_baselines3.common.atari_wrappers import ClipRewardEnv, WarpFrame
-from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecTransposeImage
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecFrameStack, VecTransposeImage
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 import retro
@@ -89,12 +89,12 @@ def main():
     os.makedirs("models", exist_ok=True)
     
     # Create vectorized environment
-    env = DummyVecEnv([make_env(args.game, args.state, args.scenario, i) for i in range(1)])
+    env = SubprocVecEnv([make_env(args.game, args.state, args.scenario, i) for i in range(1)])
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
 
     # Create evaluation environment
-    eval_env = DummyVecEnv([make_env(args.game, args.state, args.scenario, 0)])
+    eval_env = SubprocVecEnv([make_env(args.game, args.state, args.scenario, 0)])
     eval_env = VecFrameStack(eval_env, n_stack=4)
     eval_env = VecTransposeImage(eval_env)
 
@@ -144,6 +144,8 @@ def main():
 
     # Save the final model
     model.save("./models/sonic_dqn_final")
+    env.close()
+    eval_env.close()
 
 if __name__ == "__main__":
     main()
