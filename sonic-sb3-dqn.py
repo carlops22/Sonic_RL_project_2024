@@ -9,7 +9,20 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 import retro
 import os
+import gym
+import numpy as np
 
+class MultiBinaryToDiscreteWrapper(gym.ActionWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.env = env
+        # Generate all possible actions for the MultiBinary space
+        self.discrete_actions = np.array(np.meshgrid(*[[0, 1]] * env.action_space.n)).T.reshape(-1, env.action_space.n)
+        self.action_space = gym.spaces.Discrete(len(self.discrete_actions))
+
+    def action(self, action):
+        # Map discrete action to MultiBinary action
+        return self.discrete_actions[action]
 class StochasticFrameSkip(gym.Wrapper):
     def __init__(self, env, n, stickprob):
         gym.Wrapper.__init__(self, env)
@@ -71,6 +84,7 @@ def wrap_deepmind_retro(env):
 def make_env(game, state, scenario, rank):
     def _init():
         env = make_retro(game=game, state=state, scenario=scenario)
+        env = MultiBinaryToDiscreteWrapper(env)
         env = wrap_deepmind_retro(env)
         env = Monitor(env, f"./logs/train_{rank}")
         return env
