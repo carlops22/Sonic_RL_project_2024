@@ -9,8 +9,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 import retro
 import os
-import gym
-import numpy as np
+
 
 class MultiBinaryToDiscreteWrapper(gym.ActionWrapper):
     def __init__(self, env):
