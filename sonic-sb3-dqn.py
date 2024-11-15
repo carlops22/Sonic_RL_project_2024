@@ -10,6 +10,17 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 import retro
 import os
 
+class CustomEvalCallback(EvalCallback):
+    def __init__(self, *args, render_freq=10000, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.render_freq = render_freq
+
+    def _on_step(self):
+        # Render the environment every `render_freq` timesteps during evaluation
+        if self.n_calls % self.render_freq == 0:
+            self.eval_env.render()
+        return super()._on_step()
+    
 
 class MultiBinaryToDiscreteWrapper(gym.ActionWrapper):
     def __init__(self, env):
@@ -119,7 +130,7 @@ def main():
         name_prefix="sonic_dqn"
     )
     
-    eval_callback = EvalCallback(
+    eval_callback = CustomEvalCallback(
         eval_env,
         best_model_save_path="./models/best_model",
         log_path="./logs/eval/",
@@ -153,7 +164,7 @@ def main():
     model.learn(
         total_timesteps=args.timesteps,
         callback=[checkpoint_callback, eval_callback],
-        log_interval=10
+        log_interval=1000
     )
 
     # Save the final model
