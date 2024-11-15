@@ -1,6 +1,7 @@
 import argparse
 import gymnasium as gym
 import numpy as np
+import torch
 from gymnasium.wrappers.time_limit import TimeLimit
 from stable_baselines3 import DQN
 from stable_baselines3.common.atari_wrappers import ClipRewardEnv, WarpFrame
@@ -143,6 +144,7 @@ def main():
         model = DQN.load(args.checkpoint, env=env)
     else:
     # Initialize DQN model
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = DQN(
             policy="CnnPolicy",
             env=env,
@@ -162,7 +164,7 @@ def main():
             verbose=1,
             tensorboard_log="./logs/tensorboard/"
         )
-
+        mode.to(device)
         # Train the model
         model.learn(
             total_timesteps=args.timesteps,
