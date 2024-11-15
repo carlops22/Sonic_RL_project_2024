@@ -95,14 +95,15 @@ def main():
     parser.add_argument("--state", default="GreenHillZone.Act1")
     parser.add_argument("--scenario", default="contest")
     parser.add_argument("--timesteps", type=int, default=2_000_000)
+    parser.add_argument("--num_envs", type=int, default=4)
     args = parser.parse_args()
 
     # Create output directories
     os.makedirs("logs", exist_ok=True)
     os.makedirs("models", exist_ok=True)
-    
+
     # Create vectorized environment
-    env = SubprocVecEnv([make_env(args.game, args.state, args.scenario, i) for i in range(1)])
+    env = SubprocVecEnv([make_env(args.game, args.state, args.scenario, i) for i in range(args.num_envs)])
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
 
