@@ -162,9 +162,9 @@ def main():
             exploration_final_eps=0.01,
             max_grad_norm=10,
             verbose=1,
-            tensorboard_log="./logs/tensorboard/"
+            tensorboard_log="./logs/tensorboard/",
+            device="cuda" if torch.cuda.is_available() else "cpu"
         )
-        model.to(device)
         # Train the model
         model.learn(
             total_timesteps=args.timesteps,
