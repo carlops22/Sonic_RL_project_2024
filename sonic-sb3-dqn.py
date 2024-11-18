@@ -115,7 +115,8 @@ class StabilizedDQN(DQN):
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         losses = []
         for _ in range(gradient_steps):
-            if self._should_warm_start():
+            # Check if we need to sample new data
+            if self.replay_buffer.pos < batch_size:  
                 continue
             
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
