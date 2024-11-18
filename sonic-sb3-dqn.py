@@ -181,7 +181,7 @@ def main():
             policy="CnnPolicy",
             env=env,
             learning_rate=0.0001,
-            buffer_size=100000,
+            buffer_size=75000,
             learning_starts=10000,
             batch_size=64,
             tau=1.0,
