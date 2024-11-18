@@ -46,6 +46,7 @@ class RetroEnv(gym.Env):
         self.players = players
         #################  VARIABLE PROPIA SONIC  ######################
         self.previous_info = {}
+        self.farthest_distance = 0
         # Don't return multiple rewards in multiplayer mode by default
         # as stable-baselines3 vectorized environments doesn't support it
         self.multi_rewards = False
@@ -319,48 +320,80 @@ class RetroEnv(gym.Env):
     ##################### COMPUTO PROPIO SONIC  ###########################
     def compute_step(self):
         rewards = []
-
         # Recorre cada jugador y calcula recompensas personalizadas
         for p in range(self.players):
-            current_info = self.data.lookup_all()  # Información actual de todos los jugadores
-            player_info = current_info  # Accede a la información del jugador `p` desde el diccionario
+            current_info = self.data.lookup_all()  # Información actual del jugador `p`
             prev_info = self.previous_info.get(p, None)  # Información anterior guardada para calcular diferencias
             reward = 0
 
-            # 1. Recompensa por avance en el nivel
-            if prev_info:
-                advance_reward = max(0, player_info['screen_x'] - prev_info['screen_x']) * 0.1
+             # 1. Recompensa por avance en el nivel (superación de la barrera de referencia)
+            current_x = current_info['x']
+            if current_x - self.farthest_distance > 100:  # Actualizar siempre que current_x avance
+                # Actualiza la distancia más lejana alcanzada siempre que current_x avance
+                self.farthest_distance = current_x
+
+                advance_reward = self.farthest_distance * 0.01 #recompensa en proporcion de mejor distancia
                 reward += advance_reward
+                #print(f'Actual: {current_x} - {self.farthest_distance} = {current_x - self.farthest_distance} -> Recompensa otorgada: {advance_reward}')
+
+                
+
+            # if prev_info:
+            #     #estarse quieto
+            #     moveX = current_info['x'] - prev_info['x'] 
+            #     moveY = current_info['y'] - prev_info['y']
+            #         # screen_x_value = current_info['x']
+            #         # screen_x_value1 = prev_info['x']
+            #         # print(f'Quieto= {screen_x_value}, {screen_x_value1}')
+            #     if not moveX and not moveY:
+            #         #print(moveX)
+            #         penalty = 10
+            #         reward += penalty
+
 
             # 2. Recompensa por eliminar enemigos (aumento en 'score')
             if prev_info:
-                enemy_kill_reward = max(0, player_info['score'] - prev_info['score']) * 0.5
+                enemy_kill_reward = max(0, current_info['score'] - prev_info['score']) * 10
                 reward += enemy_kill_reward
 
-            # 3. Penalización por tiempo
-            time_penalty = -0.01  # Penalización fija por cada paso
-            reward += time_penalty
+            # Penalización por muerte
+            if prev_info:
+                death = current_info['lives'] - prev_info['lives']
+                life_loss_penalty = -50 if death < 0 else 0
+                if death: self.farthest_distance = 0
+                reward += life_loss_penalty
+
+            # Penalización por pérdida de anillos
+            if prev_info:
+                ring_loss = prev_info['rings'] - current_info['rings']
+                ring_loss_penalty = -5 * ring_loss if ring_loss > 0 else 0  # Penalización de -5 puntos por cada anillo perdido
+                reward += ring_loss_penalty
+
+            # # 3. Penalización por tiempo
+            # time_penalty = -0.001  # Penalización fija por cada paso
+            # reward += time_penalty
 
             # 4. Recompensa por recolectar anillos (aumento en 'rings')
             if prev_info:
-                ring_reward = max(0, player_info['rings'] - prev_info['rings']) * 0.2
+                ring_reward = max(0, current_info['rings'] - prev_info['rings']) * 0.9
                 reward += ring_reward
 
-            # 5. Recompensa por completar el nivel (con un bonus muy alto)
-            level_complete_bonus = 1000 if player_info['level_end_bonus'] > 0 else 0
+            # 5. Recompensa por completar el nivel
+            level_complete_bonus = 10000 if current_info['level_end_bonus'] > 0 else 0
             reward += level_complete_bonus
 
             # Agrega la recompensa calculada para el jugador `p`
             rewards.append(reward)
 
             # Actualiza la información previa del jugador `p`
-            self.previous_info[p] = player_info
+            self.previous_info[p] = current_info
 
         # Si solo hay un jugador, regresa un solo valor en lugar de una lista
         reward = rewards[0] if self.players == 1 else rewards
         done = self.data.is_done()
-
+        
         return reward, done, self.data.lookup_all()
+
 
 
     def record_movie(self, path):
