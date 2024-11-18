@@ -14,7 +14,7 @@ import os
 class SonicRewardWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
-        self.prev_x = None
+        self.prev_info = {}
         self.reset_metrics()
 
     def reset(self, **kwargs):
@@ -23,30 +23,72 @@ class SonicRewardWrapper(gym.Wrapper):
         return obs, info
 
     def reset_metrics(self):
+        self.farthest_distance = 0
+        self.previous_info = {}
         self.prev_x = self.unwrapped.data.lookup_all().get('x', 0)
         self.max_x = self.prev_x
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
-        current_x = self.unwrapped.data.lookup_all().get('x', 0)
+        current_info = self.unwrapped.data.lookup_all()
+        prev_info = self.previous_info or {}
         
-        # Track max progress
-        self.max_x = max(self.max_x, current_x)
-        
-        # Progress reward with diminishing returns
+        custom_reward = 0
+
+
+        # 1. Reward for advancement
+        current_x = current_info.get('x', 0)
+        if current_x - self.farthest_distance > 100:
+            self.farthest_distance = current_x
+            advance_reward = self.farthest_distance * 0.01
+            custom_reward += advance_reward
+
+        # 2. Reward for killing enemies
+        if prev_info:
+            score_diff = current_info.get('score', 0) - prev_info.get('score', 0)
+            enemy_kill_reward = max(0, score_diff) * 10
+            custom_reward += enemy_kill_reward
+
+        # 3. Penalty for losing lives
+        if prev_info:
+            life_diff = current_info.get('lives', 0) - prev_info.get('lives', 0)
+            if life_diff < 0:
+                custom_reward += -50
+                self.farthest_distance = 0  # Reset farthest distance on death
+
+        # 4. Penalty for losing rings
+        if prev_info:
+            ring_diff = prev_info.get('rings', 0) - current_info.get('rings', 0)
+            ring_loss_penalty = -5 * ring_diff if ring_diff > 0 else 0
+            custom_reward += ring_loss_penalty
+
+        # 5. Reward for collecting rings
+        if prev_info:
+            ring_gain = max(0, current_info.get('rings', 0) - prev_info.get('rings', 0))
+            ring_reward = ring_gain * 0.9
+            custom_reward += ring_reward
+
+        # 6. Bonus for completing the level
+        level_complete_bonus = 10000 if current_info.get('level_end_bonus', 0) > 0 else 0
+        custom_reward += level_complete_bonus
+
+        # 7. Exploration bonus
         x_progress = max(0, current_x - self.prev_x)
         progress_reward = np.sqrt(x_progress) * 0.25
-        
-        # Prevent extreme negative rewards
-        total_reward = progress_reward + np.clip(reward * 0.05, -1.0, 1.0)
-        
-        # Small exploration bonus
+        custom_reward += progress_reward
         if x_progress > 0:
-            total_reward += 0.005
+            custom_reward += 0.005
 
+        # Combine custom reward with clipped environment reward
+        total_reward = custom_reward + np.clip(reward * 0.05, -1.0, 1.0)
+
+        # Prevent extreme rewards
         total_reward = np.clip(total_reward, -2.0, 2.0)
-        
+
+        # Update previous state
         self.prev_x = current_x
+        self.previous_info = current_info
+
         return obs, total_reward, terminated, truncated, info
 
 class CustomEvalCallback(EvalCallback):
