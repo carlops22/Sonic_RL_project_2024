@@ -37,49 +37,6 @@ class SonicRewardWrapper(gym.Wrapper):
         self.prev_lives = current_lives
         return obs, reward, terminated, truncated, info
     
-class CustomDQN(DQN):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Replace standard replay buffer with PER
-        self.replay_buffer = PrioritizedReplayBuffer(
-            buffer_size=kwargs.get('buffer_size', 60000),
-            alpha=0.6,  # PER hyperparameter
-            beta0=0.4,  # Initial value of beta for importance sampling
-            beta_steps=kwargs.get('learning_starts', 5000),
-            env=kwargs.get('env')
-        )
-        
-    def train(self, gradient_steps: int, batch_size: int = 100) -> None:
-        """MSE loss for DQN with PER"""
-        for _ in range(gradient_steps):
-            if self.replay_buffer.size() < batch_size:
-                break
-                
-            # Sample from PER
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
-            
-            with torch.no_grad():
-                # Compute the next Q-values using the target network
-                next_q_values = self.q_net_target(replay_data.next_observations)
-                next_q_values, _ = next_q_values.max(dim=1)
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
-                
-            # Get current Q-values estimates
-            current_q_values = self.q_net(replay_data.observations)
-            
-            # Compute MSE for PER 
-            mse = torch.pow(current_q_values.gather(1, replay_data.actions) - target_q_values.unsqueeze(1), 2)
-            
-            # Update priorities in the replay buffer
-            self.replay_buffer.update_priorities(
-                indices=np.arange(batch_size),
-                priorities=mse.detach().cpu().numpy().flatten()
-            )
-            
-            # Train normally
-            super().train(gradient_steps, batch_size)
-
-
 class CustomEvalCallback(EvalCallback):
     def __init__(self, *args, render_freq=10000, **kwargs):
         super().__init__(*args, **kwargs)
@@ -214,7 +171,7 @@ def main():
     if args.checkpoint is not None:
         model = DQN.load(args.checkpoint, env=env)
     else:
-        model = CustomDQN(
+        model = DQN(
             policy="CnnPolicy",
             env=env,
             learning_rate=0.001,
@@ -229,7 +186,6 @@ def main():
             exploration_fraction=0.2,
             exploration_initial_eps=1.0,
             exploration_final_eps=0.01,
-            exploration_decay=0.999,
             max_grad_norm=10,
             verbose=1,
             tensorboard_log="./logs/tensorboard/",
@@ -242,7 +198,6 @@ def main():
                 normalize_images=True
             )
         )
-
         # Train the model
         model.learn(
             total_timesteps=args.timesteps,
