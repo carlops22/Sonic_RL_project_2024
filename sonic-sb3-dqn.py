@@ -240,17 +240,24 @@ def main():
     parser.add_argument("--checkpoint", default=None, help="Path to checkpoint to resume training")
     args = parser.parse_args()
 
+
+    def get_unique_video_folder(base_path):
+        """Generate a unique folder for each run based on the timestamp"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return os.path.join(base_path, f"videos_{timestamp}")
+
     def make_env(game, state, scenario, rank):
         def _init():
             env = make_retro(game=game, state=state, scenario=scenario)
             env = SonicRewardWrapper(env) 
             env = MultiBinaryToDiscreteWrapper(env)
             env = wrap_deepmind_retro(env)
+            video_folder = get_unique_video_folder("./videos")
             env = RecordVideo(
                 env,
                 video_folder="videos1",
                 name_prefix="training_run",
-                episode_trigger=lambda episode_id: episode_id % args.save_interval == 0
+                episode_trigger=lambda x: x % 10 == 0
             )
             env = RecordEpisodeStatistics(env)
             env = Monitor(env, f"./logs/train_{rank}")
