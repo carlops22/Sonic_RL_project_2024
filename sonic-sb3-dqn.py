@@ -258,7 +258,7 @@ def main():
                 env,
                 video_folder="videos1",
                 name_prefix="training_run",
-                episode_trigger=lambda episode_id: episode_id % args.timesteps_interval == 0
+                episode_trigger=lambda episode_id: episode_id % args.save_interval == 0
             )
             env = RecordEpisodeStatistics(env)
             env = Monitor(env, f"./logs/train_{rank}")
