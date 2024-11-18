@@ -10,39 +10,42 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 import retro
 import os
-
 class SonicRewardWrapper(gym.Wrapper):
-    """Wrapper to modify rewards for Sonic environments"""
     def __init__(self, env):
         super().__init__(env)
-        self.prev_lives = None
         self.prev_x = None
+        self.reset_metrics()
+
     def reset(self, **kwargs):
-        obs = self.env.reset(**kwargs)
-        self.prev_lives = self.unwrapped.data.lookup_all().get('lives', 3)
+        obs, info = self.env.reset(**kwargs)
+        self.reset_metrics()
+        return obs, info
+
+    def reset_metrics(self):
         self.prev_x = self.unwrapped.data.lookup_all().get('x', 0)
-        return obs
+        self.max_x = self.prev_x
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
-        current_lives = self.unwrapped.data.lookup_all().get('lives', 3)
         current_x = self.unwrapped.data.lookup_all().get('x', 0)
         
-        # Reward for moving right (scaled appropriately)
-        x_reward = max(0, current_x - self.prev_x) * 0.5
+        # Track max progress
+        self.max_x = max(self.max_x, current_x)
         
-        # Death penalty
-        if (self.prev_lives > current_lives):
-            reward = -100
+        # Progress reward with diminishing returns
+        x_progress = max(0, current_x - self.prev_x)
+        progress_reward = np.sqrt(x_progress) * 2.0
         
-        # Combine rewards
-        total_reward = x_reward + reward
+        # Prevent extreme negative rewards
+        total_reward = progress_reward + reward * 0.1
+        
+        # Small exploration bonus
+        if x_progress > 0:
+            total_reward += 0.05
         
         self.prev_x = current_x
-        self.prev_lives = current_lives
-        
         return obs, total_reward, terminated, truncated, info
-    
+
 class CustomEvalCallback(EvalCallback):
     def __init__(self, *args, render_freq=10000, **kwargs):
         super().__init__(*args, **kwargs)
@@ -68,19 +71,23 @@ class MultiBinaryToDiscreteWrapper(gym.ActionWrapper):
         # Map discrete action to MultiBinary action
         return self.discrete_actions[action]
 class StochasticFrameSkip(gym.Wrapper):
-    def __init__(self, env, n, stickprob):
-        gym.Wrapper.__init__(self, env)
+    def __init__(self, env, n=4, stickprob=0.25, exploration_prob=0.1):
+        super().__init__(env)
         self.n = n
         self.stickprob = stickprob
+        self.exploration_prob = exploration_prob
         self.curac = None
         self.rng = np.random.RandomState()
-        self.supports_want_render = hasattr(env, "supports_want_render")
 
     def reset(self, **kwargs):
         self.curac = None
         return self.env.reset(**kwargs)
 
     def step(self, ac):
+        # Occasional random action for exploration
+        if self.rng.rand() < self.exploration_prob:
+            ac = self.env.action_space.sample()
+        
         terminated = False
         truncated = False
         totrew = 0
@@ -92,22 +99,16 @@ class StochasticFrameSkip(gym.Wrapper):
                     self.curac = ac
             elif i == 1:
                 self.curac = ac
-            if self.supports_want_render and i < self.n - 1:
-                ob, rew, terminated, truncated, info = self.env.step(
-                    self.curac,
-                    want_render=False,
-                )
-            else:
-                ob, rew, terminated, truncated, info = self.env.step(self.curac)
+            
+            ob, rew, terminated, truncated, info = self.env.step(self.curac)
             totrew += rew
+            
             if terminated or truncated:
                 break
+        
         return ob, totrew, terminated, truncated, info
 
-class RewardScaler(gym.RewardWrapper):
-    """Scale rewards to be in a reasonable range for DQN"""
-    def reward(self, reward):
-        return reward * 0.01
+
 
 def make_retro(*, game, state=None, max_episode_steps=4500, **kwargs):
     if state is None:
@@ -122,7 +123,6 @@ def wrap_deepmind_retro(env):
     """Configure environment for retro games with DQN-style preprocessing"""
     env = WarpFrame(env)
     env = ClipRewardEnv(env)
-    env = RewardScaler(env)
     return env
 
 def make_env(game, state, scenario, rank):
@@ -180,27 +180,25 @@ def main():
         model = DQN(
             policy="CnnPolicy",
             env=env,
-            learning_rate=0.001,
-            buffer_size=30000,
+            learning_rate=0.0005,
+            buffer_size=50000,
             learning_starts=5000,
-            batch_size=64,
+            batch_size=128,
             tau=1.0,
             gamma=0.95,
-            train_freq=64,
+            train_freq=4,
             gradient_steps=1,
             target_update_interval=1000,
-            exploration_fraction=0.2,
+            exploration_fraction=0.3,
             exploration_initial_eps=1.0,
-            exploration_final_eps=0.01,
+            exploration_final_eps=0.05,
             max_grad_norm=10,
             verbose=1,
             tensorboard_log="./logs/tensorboard/",
             device="cuda" if torch.cuda.is_available() else "cpu",
             policy_kwargs=dict(
-                features_extractor_kwargs=dict(
-                    features_dim=512
-                ),
-                net_arch=[512],
+                features_extractor_kwargs=dict(features_dim=1024),
+                net_arch=[1024, 512],
                 normalize_images=True
             )
         )
