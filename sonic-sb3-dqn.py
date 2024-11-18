@@ -25,22 +25,22 @@ class SonicRewardWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         current_lives = self.unwrapped.data.lookup_all().get('lives', 3)
-
-        # Get x position from the environment
         current_x = self.unwrapped.data.lookup_all().get('x', 0)
         
-        # Reward for moving right
-        x_reward = max(0, current_x - self.prev_x) * 0.1
+        # Reward for moving right (scaled appropriately)
+        x_reward = max(0, current_x - self.prev_x) * 0.5
         
-        # Penalize death heavily
-        if (self.prev_lives > current_lives) and (terminated or truncated):
-            reward = -1000
-        else:
-            # Small negative reward each step to encourage faster completion
-            reward = reward - 1.0
-            
+        # Death penalty
+        if (self.prev_lives > current_lives):
+            reward = -100
+        
+        # Combine rewards
+        total_reward = x_reward + reward
+        
+        self.prev_x = current_x
         self.prev_lives = current_lives
-        return obs, reward, terminated, truncated, info
+        
+        return obs, total_reward, terminated, truncated, info
     
 class CustomEvalCallback(EvalCallback):
     def __init__(self, *args, render_freq=10000, **kwargs):
