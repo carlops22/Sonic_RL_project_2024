@@ -16,10 +16,11 @@ class SonicRewardWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.prev_lives = None
-
+        self.prev_x = None
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
         self.prev_lives = self.unwrapped.data.lookup_all().get('lives', 3)
+        self.prev_x = self.unwrapped.data.lookup_all().get('x', 0)
         return obs
 
     def step(self, action):
