@@ -25,6 +25,12 @@ class SonicRewardWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         current_lives = self.unwrapped.data.lookup_all().get('lives', 3)
+
+        # Get x position from the environment
+        current_x = self.unwrapped.data.lookup_all().get('x', 0)
+        
+        # Reward for moving right
+        x_reward = max(0, current_x - self.prev_x) * 0.1
         
         # Penalize death heavily
         if (self.prev_lives > current_lives) and (terminated or truncated):
