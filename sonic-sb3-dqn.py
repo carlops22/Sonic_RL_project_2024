@@ -34,14 +34,16 @@ class SonicRewardWrapper(gym.Wrapper):
         
         # Progress reward with diminishing returns
         x_progress = max(0, current_x - self.prev_x)
-        progress_reward = np.sqrt(x_progress) * 0.5
+        progress_reward = np.sqrt(x_progress) * 0.25
         
         # Prevent extreme negative rewards
-        total_reward = progress_reward + reward * 0.1 / 10.0
+        total_reward = progress_reward + np.clip(reward * 0.05, -1.0, 1.0)
         
         # Small exploration bonus
         if x_progress > 0:
-            total_reward += 0.01
+            total_reward += 0.005
+
+        total_reward = np.clip(total_reward, -2.0, 2.0)
         
         self.prev_x = current_x
         return obs, total_reward, terminated, truncated, info
@@ -109,6 +111,40 @@ class StochasticFrameSkip(gym.Wrapper):
         return ob, totrew, terminated, truncated, info
 
 
+class StabilizedDQN(DQN):
+    def train(self, gradient_steps: int, batch_size: int = 100) -> None:
+        losses = []
+        for _ in range(gradient_steps):
+            if self._should_warm_start():
+                continue
+            
+            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
+            with torch.no_grad():
+                next_q_values = self.q_net_target(replay_data.next_observations)
+                next_q_values, _ = next_q_values.max(dim=1)
+                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+
+            current_q_values = self.q_net(replay_data.observations)
+            current_q_values = torch.gather(current_q_values, dim=1, index=replay_data.actions)
+
+            loss = torch.nn.functional.smooth_l1_loss(current_q_values, target_q_values.unsqueeze(1))
+            
+            # Clip loss to prevent explosion
+            loss = torch.clamp(loss, -100, 100)
+            
+            losses.append(loss.item())
+            
+            self.optimizer.zero_grad()
+            loss.backward()
+            
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), self.max_grad_norm)
+            
+            self.optimizer.step()
+
+        if len(losses) > 0:
+            self.logger.record("train/loss", np.mean(losses))
+
 
 def make_retro(*, game, state=None, max_episode_steps=4500, **kwargs):
     if state is None:
@@ -175,30 +211,30 @@ def main():
         deterministic=True
     )
     if args.checkpoint is not None:
-        model = DQN.load(args.checkpoint, env=env)
+        model = StabilizedDQN.load(args.checkpoint, env=env)
     else:
-        model = DQN(
+        model = StabilizedDQN(
             policy="CnnPolicy",
             env=env,
-            learning_rate=0.00005,
-            buffer_size=80000,
-            learning_starts=20000,
+            learning_rate=1e-6,
+            buffer_size=30000,
+            learning_starts=1000,
             batch_size=32,
-            tau=0.5,
-            gamma=0.96,
-            train_freq=4,
+            tau=0.2,
+            gamma=0.99,
+            train_freq=8,
             gradient_steps=1,
-            target_update_interval=1000,
+            target_update_interval=500,
             exploration_fraction=0.3,
             exploration_initial_eps=1.0,
-            exploration_final_eps=0.01,
-            max_grad_norm=1.0,
+            exploration_final_eps=0.02,
+            max_grad_norm=0.1,
             verbose=1,
             tensorboard_log="./logs/tensorboard/",
             device="cuda" if torch.cuda.is_available() else "cpu",
             policy_kwargs=dict(
-                features_extractor_kwargs=dict(features_dim=256),
-                net_arch=[256, 128],
+                features_extractor_kwargs=dict(features_dim=128),
+                net_arch=[64, 32],
                 normalize_images=True
             )
         )
