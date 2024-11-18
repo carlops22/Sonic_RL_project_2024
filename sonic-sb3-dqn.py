@@ -317,8 +317,10 @@ def main():
         # Train the model
         model.learn(
             total_timesteps=args.timesteps,
+            reset_num_timesteps=False,
             callback=[checkpoint_callback, eval_callback],
-            log_interval=100
+            log_interval=50,
+            progress_bar = True
         )
 
     # Save the final model
