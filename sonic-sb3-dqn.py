@@ -5,6 +5,7 @@ import torch
 from gymnasium.wrappers.time_limit import TimeLimit
 from stable_baselines3 import DQN
 from stable_baselines3.common.atari_wrappers import ClipRewardEnv, WarpFrame
+from gymnasium.wrappers import RecordEpisodeStatistics, RecordVideo
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecFrameStack, VecTransposeImage
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
@@ -172,7 +173,7 @@ class StabilizedDQN(DQN):
 def make_retro(*, game, state=None, max_episode_steps=4500, **kwargs):
     if state is None:
         state = retro.State.DEFAULT
-    env = retro.make(game, state, **kwargs, render_mode=None)
+    env = retro.make(game, state, **kwargs, render_mode="rgb_array")
     env = StochasticFrameSkip(env, n=4, stickprob=0.25)
     if max_episode_steps is not None:
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
@@ -184,26 +185,36 @@ def wrap_deepmind_retro(env):
     env = ClipRewardEnv(env)
     return env
 
-def make_env(game, state, scenario, rank):
-    def _init():
-        env = make_retro(game=game, state=state, scenario=scenario)
-        env = SonicRewardWrapper(env) 
-        env = MultiBinaryToDiscreteWrapper(env)
-        env = wrap_deepmind_retro(env)
-        env = Monitor(env, f"./logs/train_{rank}")
-        return env
-    return _init
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--game", default="SonicTheHedgehog-Genesis")
     parser.add_argument("--state", default="GreenHillZone.Act1")
     parser.add_argument("--scenario", default="contest")
+    parser.add_argument("--save_interval", type=int, default=100, help="Episodes interval to save video")
     parser.add_argument("--timesteps", type=int, default=2_000_000)
     parser.add_argument("--num_envs", type=int, default=4)
     parser.add_argument("--checkpoint", default=None, help="Path to checkpoint to resume training")
     args = parser.parse_args()
 
+    def make_env(game, state, scenario, rank):
+        def _init():
+            env = make_retro(game=game, state=state, scenario=scenario)
+            env = SonicRewardWrapper(env) 
+            env = MultiBinaryToDiscreteWrapper(env)
+            env = wrap_deepmind_retro(env)
+            env = RecordVideo(
+                env,
+                video_folder="videos1",
+                name_prefix="training_run",
+                episode_trigger=lambda episode_id: episode_id % args.save_interval == 0
+            )
+            env = RecordEpisodeStatistics(env)
+            env = Monitor(env, f"./logs/train_{rank}")
+            return env
+        return _init
+    
     # Create output directories
     os.makedirs("logs", exist_ok=True)
     os.makedirs("models", exist_ok=True)
