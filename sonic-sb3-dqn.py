@@ -110,14 +110,17 @@ class StochasticFrameSkip(gym.Wrapper):
         
         return ob, totrew, terminated, truncated, info
 
-
 class StabilizedDQN(DQN):
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
+        # Ensure we have the optimizer
+        if not hasattr(self, "optimizer"):
+            self.optimizer = self.policy.optimizer
+            
         losses = []
         for _ in range(gradient_steps):
             # Check if we need to sample new data
-            if self.replay_buffer.pos < batch_size:  
-                continue
+            if not self._can_sample(batch_size):
+                return
             
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
             with torch.no_grad():
@@ -127,8 +130,12 @@ class StabilizedDQN(DQN):
 
             current_q_values = self.q_net(replay_data.observations)
             current_q_values = torch.gather(current_q_values, dim=1, index=replay_data.actions)
-
-            loss = torch.nn.functional.smooth_l1_loss(current_q_values, target_q_values.unsqueeze(1))
+            
+            # Ensure target_q_values has the right shape without using unsqueeze
+            target_q_values = target_q_values.reshape(-1, 1)
+            
+            # Use Huber loss (smooth L1) with proper shapes
+            loss = torch.nn.functional.smooth_l1_loss(current_q_values, target_q_values)
             
             # Clip loss to prevent explosion
             loss = torch.clamp(loss, -100, 100)
@@ -139,12 +146,20 @@ class StabilizedDQN(DQN):
             loss.backward()
             
             # Clip gradients
-            torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), self.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             
             self.optimizer.step()
 
         if len(losses) > 0:
             self.logger.record("train/loss", np.mean(losses))
+            
+    def _can_sample(self, batch_size):
+        """Check if enough samples are available in the replay buffer"""
+        return bool(
+            self.replay_buffer is not None and
+            self.replay_buffer.size() > batch_size and
+            self.replay_buffer.size() >= self.learning_starts
+        )
 
 
 def make_retro(*, game, state=None, max_episode_steps=4500, **kwargs):
