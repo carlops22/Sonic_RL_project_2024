@@ -34,14 +34,14 @@ class SonicRewardWrapper(gym.Wrapper):
         
         # Progress reward with diminishing returns
         x_progress = max(0, current_x - self.prev_x)
-        progress_reward = np.sqrt(x_progress) * 2.0
+        progress_reward = np.sqrt(x_progress) * 0.5
         
         # Prevent extreme negative rewards
-        total_reward = progress_reward + reward * 0.1
+        total_reward = progress_reward + reward * 0.1 / 10.0
         
         # Small exploration bonus
         if x_progress > 0:
-            total_reward += 0.05
+            total_reward += 0.01
         
         self.prev_x = current_x
         return obs, total_reward, terminated, truncated, info
@@ -180,25 +180,25 @@ def main():
         model = DQN(
             policy="CnnPolicy",
             env=env,
-            learning_rate=0.0001,
-            buffer_size=75000,
-            learning_starts=10000,
-            batch_size=64,
-            tau=1.0,
+            learning_rate=0.00005,
+            buffer_size=100000,
+            learning_starts=20000,
+            batch_size=32,
+            tau=0.5,
             gamma=0.96,
             train_freq=4,
             gradient_steps=1,
-            target_update_interval=5000,
-            exploration_fraction=0.2,
+            target_update_interval=1000,
+            exploration_fraction=0.3,
             exploration_initial_eps=1.0,
-            exploration_final_eps=0.05,
-            max_grad_norm=5,
+            exploration_final_eps=0.01,
+            max_grad_norm=1.0,
             verbose=1,
             tensorboard_log="./logs/tensorboard/",
             device="cuda" if torch.cuda.is_available() else "cpu",
             policy_kwargs=dict(
-                features_extractor_kwargs=dict(features_dim=512),
-                net_arch=[512, 256],
+                features_extractor_kwargs=dict(features_dim=256),
+                net_arch=[256, 128],
                 normalize_images=True
             )
         )
