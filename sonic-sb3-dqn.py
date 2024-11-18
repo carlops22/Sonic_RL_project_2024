@@ -124,17 +124,24 @@ class StabilizedDQN(DQN):
             
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
             with torch.no_grad():
+                # Calculate next Q-values and target Q-values
                 next_q_values = self.q_net_target(replay_data.next_observations)
-                next_q_values, _ = next_q_values.max(dim=1)
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                # Get the maximum Q-value along the action dimension
+                max_next_q_values, _ = next_q_values.max(dim=1, keepdim=True)
+                # Calculate target Q-values with discounted future rewards
+                target_q_values = replay_data.rewards.reshape(-1, 1) + \
+                    (1 - replay_data.dones.reshape(-1, 1)) * self.gamma * max_next_q_values
 
+            # Get current Q-values and select the ones for the actions taken
             current_q_values = self.q_net(replay_data.observations)
-            current_q_values = torch.gather(current_q_values, dim=1, index=replay_data.actions)
+            actions_column = replay_data.actions.reshape(-1, 1)
+            current_q_values = torch.gather(current_q_values, dim=1, index=actions_column)
+
+            # Ensure shapes match
+            assert current_q_values.shape == target_q_values.shape, \
+                f"Shape mismatch: current_q_values {current_q_values.shape} vs target_q_values {target_q_values.shape}"
             
-            # Ensure target_q_values has the right shape without using unsqueeze
-            target_q_values = target_q_values.reshape(-1, 1)
-            
-            # Use Huber loss (smooth L1) with proper shapes
+            # Calculate loss with properly shaped tensors
             loss = torch.nn.functional.smooth_l1_loss(current_q_values, target_q_values)
             
             # Clip loss to prevent explosion
