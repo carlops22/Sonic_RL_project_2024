@@ -495,7 +495,7 @@ def main():
         check_freq=10000
     )
     if args.checkpoint is not None:
-        print(f"Cargando el modelo desde {args.model_path}...")
+        print(f"Cargando el modelo desde {args.checkpoint}...")
         model = StabilizedDQN.load(args.checkpoint, env=env)
     else:
         print("Creando un nuevo modelo...")
