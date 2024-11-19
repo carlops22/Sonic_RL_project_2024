@@ -455,7 +455,7 @@ def main():
     curriculum_manager = CurriculumManager()
     
     # Create environments
-    env = SubprocVecEnv([make_env(args.game, curriculum_manager.get_current_level(), args.scenario, i) 
+    env = DummyVecEnv([make_env(args.game, curriculum_manager.get_current_level(), args.scenario, i) 
                          for i in range(args.num_envs)])
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
