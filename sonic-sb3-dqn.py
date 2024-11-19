@@ -429,7 +429,7 @@ def get_unique_video_folder(base_path):
 def main():
 
     args = parse_args()
-    def make_env(game, state, scenario, rank):
+    def make_env(game, state, rank):
         def _init():
             env = make_retro(game=game, state=state)
             env = SonicRewardWrapper(env) 
