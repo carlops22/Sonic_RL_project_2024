@@ -110,6 +110,8 @@ class SonicRewardWrapper(gym.Wrapper):
         obs, info = self.env.reset(**kwargs)
         self.reset_metrics()
         self.metrics.reset_episode_metrics()
+        self.current_level = kwargs.get('state', TRAINING_LEVELS[0])
+        self.metrics.current_level = self.current_level
         return obs, info
 
     def reset_metrics(self):
@@ -434,7 +436,8 @@ def main():
     def make_env(game, state, rank):
         def _init():
             env = make_retro(game=game, state=state)
-            env = SonicRewardWrapper(env) 
+            env = SonicRewardWrapper(env)
+            env.current_level = state 
             env = MultiBinaryToDiscreteWrapper(env)
             env = wrap_deepmind_retro(env)
             video_folder = get_unique_video_folder("./videos")
