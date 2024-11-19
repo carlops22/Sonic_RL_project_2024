@@ -6,7 +6,7 @@ from gymnasium.wrappers.time_limit import TimeLimit
 from stable_baselines3 import DQN
 from stable_baselines3.common.atari_wrappers import ClipRewardEnv, WarpFrame
 from gymnasium.wrappers import RecordEpisodeStatistics, RecordVideo
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecFrameStack, VecTransposeImage
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecFrameStack, VecTransposeImage, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
 from datetime import datetime
@@ -417,7 +417,7 @@ def parse_args():
     parser.add_argument("--scenario", default=None)
     parser.add_argument("--save_interval", type=int, default=50000, help="Timesteps interval to save video")
     parser.add_argument("--timesteps", type=int, default=2_000_000)
-    parser.add_argument("--num_envs", type=int, default=4)
+    parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--checkpoint", default=None, help="Path to checkpoint to resume training")
     return parser.parse_args()
 
@@ -462,7 +462,7 @@ def main():
     
     # Create evaluation environment
     eval_env = make_env(args.game, curriculum_manager.get_current_level(), args.scenario, 0)()
-    eval_env = VecFrameStack(VecTransposeImage(SubprocVecEnv([lambda: eval_env])), n_stack=4)
+    eval_env = VecFrameStack(VecTransposeImage(DummyVecEnv([lambda: eval_env])), n_stack=4)
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=50000 // args.num_envs,
