@@ -12,94 +12,241 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from datetime import datetime
 import retro
 import os
+import json
+from typing import Dict, List, Any
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+TRAINING_LEVELS = [
+    "GreenHillZone.Act1",
+    "SpringYardZone.Act1",
+    "StarLightZone.Act1"
+]
+class CurriculumManager:
+    def __init__(self, levels=TRAINING_LEVELS):
+        self.levels = levels
+        self.current_level_idx = 0
+        self.level_completion_threshold = 0.7  # 70% success rate needed to advance
+        self.completion_history = {level: [] for level in levels}
+        
+    def should_advance_level(self, success_rate):
+        if success_rate >= self.level_completion_threshold:
+            return True
+        return False
+    
+    def get_current_level(self):
+        return self.levels[self.current_level_idx]
+    
+    def advance_level(self):
+        if self.current_level_idx < len(self.levels) - 1:
+            self.current_level_idx += 1
+            return True
+        return False
+    
+    def update_completion(self, level, completed):
+        self.completion_history[level].append(completed)
+        # Keep only last 100 attempts
+        self.completion_history[level] = self.completion_history[level][-100:]
+    
+    def get_success_rate(self, level):
+        history = self.completion_history[level]
+        if not history:
+            return 0.0
+        return sum(history) / len(history)
+
+class SonicMetrics:
+    """Clase para seguimiento de métricas durante el entrenamiento"""
+    def __init__(self):
+        self.reset_episode_metrics()
+        self.total_episodes = 0
+        self.total_deaths = 0
+        self.level_completions = {level: 0 for level in TRAINING_LEVELS}
+        self.best_times = {level: float('inf') for level in TRAINING_LEVELS}
+        self.ring_records = {level: 0 for level in TRAINING_LEVELS}
+        self.episode_rewards = []
+        self.completion_times = []
+        
+    def reset_episode_metrics(self):
+        self.steps = 0
+        self.rings_collected = 0
+        self.max_rings = 0
+        self.enemies_defeated = 0
+        self.current_reward = 0
+        self.episode_start_time = datetime.now()
+
+    def on_episode_end(self, level):
+        self.total_episodes += 1
+        self.episode_rewards.append(self.current_reward)
+        episode_time = (datetime.now() - self.episode_start_time).total_seconds()
+        self.completion_times.append(episode_time)
+        
+        if level in self.best_times:
+            self.best_times[level] = min(self.best_times[level], episode_time)
+
+    def get_training_stats(self):
+        completion_rate = sum(self.level_completions.values()) / max(1, self.total_episodes)
+        avg_reward = np.mean(self.episode_rewards) if self.episode_rewards else 0
+        avg_completion_time = np.mean(self.completion_times) if self.completion_times else 0
+        
+        return {
+            'total_episodes': self.total_episodes,
+            'total_deaths': self.total_deaths,
+            'completion_rate': completion_rate,
+            'average_reward': avg_reward,
+            'average_completion_time': avg_completion_time,
+            'best_times': self.best_times,
+            'level_completions': self.level_completions
+        }
+
 
 class SonicRewardWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
-        self.prev_info = {}
+        self.metrics = SonicMetrics()
         self.reset_metrics()
-
+        
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self.reset_metrics()
+        self.metrics.reset_episode_metrics()
         return obs, info
 
     def reset_metrics(self):
-        self.farthest_distance = 0
-        self.previous_info = {}
+        self.previous_info = None
         self.prev_x = 0
         self.max_x = 0
         self.standing_still_counter = 0
+        self.prev_score = 0
+        self.current_level = None
+        self.last_checkpoint_x = 0
+        self.checkpoint_rewards = 0
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         current_info = self.unwrapped.data.lookup_all()
-        prev_info = self.previous_info or {}
         
+        # Initialize custom reward
         custom_reward = 0
-
-        # 1. Progressive advancement reward
+        
+        # 1. Progress and exploration rewards
         current_x = current_info.get('x', 0)
         x_progress = current_x - self.prev_x
         
-        # Base progress reward
+        # Basic progress reward
         if x_progress > 0:
-            custom_reward += x_progress * 0.1  # Continuous reward for any forward progress
+            custom_reward += x_progress * 0.1
             
-            # Bonus for reaching new maximum
+            # Checkpoint rewards (every 100 units)
+            if current_x - self.last_checkpoint_x >= 100:
+                custom_reward += 50  # Significant reward for reaching checkpoints
+                self.last_checkpoint_x = current_x
+            
+            # New maximum progress bonus
             if current_x > self.max_x:
                 custom_reward += (current_x - self.max_x) * 0.2
                 self.max_x = current_x
 
-        # Standing still penalty
+        # Penalize standing still
         if abs(x_progress) < 1:
             self.standing_still_counter += 1
-            if self.standing_still_counter > 60:  # About 1 second
+            if self.standing_still_counter > 60:
                 custom_reward -= 0.1
         else:
             self.standing_still_counter = 0
 
         # 2. Ring management
-        if prev_info:
-            # Ring collection reward
-            ring_gain = max(0, current_info.get('rings', 0) - prev_info.get('rings', 0))
-            if ring_gain > 0:
-                custom_reward += ring_gain * 1.0  # Increased from 0.9
+        if self.previous_info is not None:
+            prev_rings = self.previous_info.get('rings', 0)
+            current_rings = current_info.get('rings', 0)
+            rings_delta = current_rings - prev_rings
             
-            # Ring loss penalty - more severe for losing all rings
-            ring_loss = max(0, prev_info.get('rings', 0) - current_info.get('rings', 0))
-            if ring_loss > 0:
-                if current_info.get('rings', 0) == 0:
+            if rings_delta > 0:
+                custom_reward += rings_delta * 1.0
+                self.metrics.rings_collected += rings_delta
+                self.metrics.max_rings = max(self.metrics.max_rings, current_rings)
+                
+                # Extra reward for collecting rings while moving
+                if x_progress > 0:
+                    custom_reward += rings_delta * 0.5
+            
+            elif rings_delta < 0:
+                if current_rings == 0:
                     custom_reward -= 25  # Severe penalty for losing all rings
                 else:
-                    custom_reward -= ring_loss * 5
+                    custom_reward -= abs(rings_delta) * 5
 
-        # 3. Enemy and score rewards
-        if prev_info:
-            score_diff = current_info.get('score', 0) - prev_info.get('score', 0)
-            if score_diff > 0:
-                custom_reward += score_diff * 0.2  # Reduced multiplier to balance with other rewards
+        # 3. Score and enemies
+        current_score = current_info.get('score', 0)
+        score_delta = current_score - self.prev_score
+        if score_delta > 0:
+            custom_reward += score_delta * 0.2
+            self.metrics.enemies_defeated += 1
 
         # 4. Life management
-        if prev_info:
-            life_diff = current_info.get('lives', 0) - prev_info.get('lives', 0)
+        if self.previous_info is not None:
+            life_diff = current_info.get('lives', 0) - self.previous_info.get('lives', 0)
             if life_diff < 0:
-                custom_reward -= 100  # Increased death penalty
-                self.farthest_distance = max(0, current_x - 50)  # Slight backtrack on death
+                custom_reward -= 100
+                terminated = True
 
         # 5. Level completion
-        level_complete_bonus = 1000 if current_info.get('level_end_bonus', 0) > 0 else 0
-        custom_reward += level_complete_bonus
+        if current_info.get('level_end_bonus', 0) > 0:
+            custom_reward += 1000
+            self.metrics.level_completions[self.current_level] += 1
+            
+            episode_time = (datetime.now() - self.metrics.episode_start_time).total_seconds()
+            if episode_time < self.metrics.best_times[self.current_level]:
+                self.metrics.best_times[self.current_level] = episode_time
+                custom_reward += 500  # Extra reward for beating best time
+            
+            terminated = True
 
-        # Update state
+        # Update states
         self.prev_x = current_x
+        self.prev_score = current_score
         self.previous_info = current_info
+        self.metrics.steps += 1
 
-        # Clip rewards to prevent extreme values while allowing for more variance
+        # Clip final reward
         total_reward = np.clip(custom_reward, -10.0, 10.0)
+        self.metrics.current_reward += total_reward
+
+        # Update info dictionary
+        info.update({
+            'episode_metrics': {
+                'steps': self.metrics.steps,
+                'rings_collected': self.metrics.rings_collected,
+                'max_rings': self.metrics.max_rings,
+                'enemies_defeated': self.metrics.enemies_defeated,
+                'distance': self.max_x,
+                'current_reward': self.metrics.current_reward,
+                'total_deaths': self.metrics.total_deaths,
+                'checkpoint_rewards': self.checkpoint_rewards
+            }
+        })
 
         return obs, total_reward, terminated, truncated, info
-
+class CurriculumCallback(BaseCallback):
+    def __init__(self, curriculum_manager, eval_env, check_freq=10000, verbose=1):
+        super().__init__(verbose)
+        self.curriculum_manager = curriculum_manager
+        self.eval_env = eval_env
+        self.check_freq = check_freq
+        
+    def _on_step(self) -> bool:
+        if self.n_calls % self.check_freq == 0:
+            current_level = self.curriculum_manager.get_current_level()
+            success_rate = self.curriculum_manager.get_success_rate(current_level)
+            
+            if self.curriculum_manager.should_advance_level(success_rate):
+                if self.curriculum_manager.advance_level():
+                    new_level = self.curriculum_manager.get_current_level()
+                    print(f"\nAdvancing to new level: {new_level}")
+                    # Update environment with new level
+                    self.eval_env.reset()
+                    
+        return True
 class CustomEvalCallback(EvalCallback):
     def __init__(self, *args, render_freq=10000, **kwargs):
         super().__init__(*args, **kwargs)
@@ -161,6 +308,33 @@ class StochasticFrameSkip(gym.Wrapper):
                 break
         
         return ob, totrew, terminated, truncated, info
+class MetricsCallback(BaseCallback):
+    def __init__(self, check_freq: int, log_dir: str, verbose: int = 1):
+        super().__init__(verbose)
+        self.check_freq = check_freq
+        self.log_dir = log_dir
+        os.makedirs(log_dir, exist_ok=True)
+        self.metrics_history = []
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.check_freq == 0:
+            # Get metrics from environment
+            env = self.training_env.envs[0]
+            if hasattr(env, 'metrics'):
+                metrics = env.metrics.get_training_stats()
+                self.metrics_history.append(metrics)
+                
+                # Log to tensorboard
+                for key, value in metrics.items():
+                    if isinstance(value, (int, float)):
+                        self.logger.record(f"metrics/{key}", value)
+                
+                # Save metrics to file
+                metrics_file = os.path.join(self.log_dir, "training_metrics.json")
+                with open(metrics_file, 'w') as f:
+                    json.dump(self.metrics_history, f, indent=4)
+        
+        return True
 
 class StabilizedDQN(DQN):
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
@@ -240,7 +414,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--game", default="SonicTheHedgehog-Genesis")
     parser.add_argument("--state", default="GreenHillZone.Act1")
-    parser.add_argument("--scenario", default="contest")
+    parser.add_argument("--scenario", default=None)
     parser.add_argument("--save_interval", type=int, default=50000, help="Timesteps interval to save video")
     parser.add_argument("--timesteps", type=int, default=2_000_000)
     parser.add_argument("--num_envs", type=int, default=4)
@@ -277,21 +451,28 @@ def main():
     os.makedirs("logs", exist_ok=True)
     os.makedirs("models", exist_ok=True)
 
-    # Create vectorized environment
-    env = SubprocVecEnv([make_env(args.game, args.state, args.scenario, i) for i in range(args.num_envs)])
+    # Initialize curriculum manager
+    curriculum_manager = CurriculumManager()
+    
+    # Create environments
+    env = SubprocVecEnv([make_env(args.game, curriculum_manager.get_current_level(), args.scenario, i) 
+                         for i in range(args.num_envs)])
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
-
+    
     # Create evaluation environment
-    eval_env = SubprocVecEnv([make_env(args.game, args.state, args.scenario, 0)])
-    eval_env = VecFrameStack(eval_env, n_stack=4)
-    eval_env = VecTransposeImage(eval_env)
-
+    eval_env = make_env(args.game, curriculum_manager.get_current_level(), args.scenario, 0)()
+    eval_env = VecFrameStack(VecTransposeImage(SubprocVecEnv([lambda: eval_env])), n_stack=4)
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=50000 // args.num_envs,
         save_path="./models/",
         name_prefix="sonic_dqn"
+    )
+
+    metrics_callback = MetricsCallback(
+        check_freq=1000,
+        log_dir="./logs/metrics/"
     )
     
     eval_callback = CustomEvalCallback(
@@ -301,6 +482,11 @@ def main():
         eval_freq=10000,
         n_eval_episodes=5,
         deterministic=True
+    )
+    curriculum_callback = CurriculumCallback(
+        curriculum_manager,
+        eval_env,
+        check_freq=10000
     )
     if args.checkpoint is not None:
         model = StabilizedDQN.load(args.checkpoint, env=env)
@@ -334,7 +520,7 @@ def main():
         model.learn(
             total_timesteps=args.timesteps,
             reset_num_timesteps=False,
-            callback=[checkpoint_callback, eval_callback],
+            callback=[checkpoint_callback, eval_callback, metrics_callback, curriculum_callback],
             log_interval=50,
             progress_bar = True
         )
