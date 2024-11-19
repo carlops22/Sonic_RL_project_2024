@@ -431,7 +431,7 @@ def main():
     args = parse_args()
     def make_env(game, state, scenario, rank):
         def _init():
-            env = make_retro(game=game, state=state, scenario=scenario)
+            env = make_retro(game=game, state=state)
             env = SonicRewardWrapper(env) 
             env = MultiBinaryToDiscreteWrapper(env)
             env = wrap_deepmind_retro(env)
@@ -459,7 +459,7 @@ def main():
                          for i in range(args.num_envs)])
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
-    
+    ''''''
     # Create evaluation environment
     eval_env = make_env(args.game, curriculum_manager.get_current_level(), args.scenario, 0)()
     eval_env = VecFrameStack(VecTransposeImage(SubprocVecEnv([lambda: eval_env])), n_stack=4)
