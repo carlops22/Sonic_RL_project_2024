@@ -455,14 +455,14 @@ def main():
     curriculum_manager = CurriculumManager()
     
     # Create environments
-    env = DummyVecEnv([make_env(args.game, curriculum_manager.get_current_level(), args.scenario, i) 
+    env = SubprocVecEnv([make_env(args.game, curriculum_manager.get_current_level(), args.scenario, i) 
                          for i in range(args.num_envs)])
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
     
     # Create evaluation environment
     eval_env = make_env(args.game, curriculum_manager.get_current_level(), args.scenario, 0)()
-    eval_env = VecFrameStack(VecTransposeImage(DummyVecEnv([lambda: eval_env])), n_stack=4)
+    eval_env = VecFrameStack(VecTransposeImage(SubprocVecEnv([lambda: eval_env])), n_stack=4)
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=50000 // args.num_envs,
