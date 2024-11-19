@@ -524,14 +524,14 @@ def main():
                 normalize_images=True
             )
         )
-        # Train the model
-        model.learn(
-            total_timesteps=args.timesteps,
-            reset_num_timesteps=False,
-            callback=[checkpoint_callback, eval_callback, metrics_callback, curriculum_callback],
-            log_interval=50,
-            progress_bar = True
-        )
+    # Train the model
+    model.learn(
+        total_timesteps=args.timesteps,
+        reset_num_timesteps=False,
+        callback=[checkpoint_callback, eval_callback, metrics_callback, curriculum_callback],
+        log_interval=50,
+        progress_bar = True
+    )
 
     # Save the final model
     model.save("./models/sonic_dqn_final")
