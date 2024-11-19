@@ -461,7 +461,7 @@ def main():
     env = VecTransposeImage(env)
     ''''''
     # Create evaluation environment
-    eval_env = make_env(args.game, curriculum_manager.get_current_level(), args.scenario, 0)()
+    eval_env = make_env(args.game, curriculum_manager.get_current_level(), 0)()
     eval_env = VecFrameStack(VecTransposeImage(SubprocVecEnv([lambda: eval_env])), n_stack=4)
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
