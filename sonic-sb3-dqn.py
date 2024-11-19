@@ -212,19 +212,19 @@ class SonicRewardWrapper(gym.Wrapper):
         total_reward = np.clip(custom_reward, -10.0, 10.0)
         self.metrics.current_reward += total_reward
 
-        # Update info dictionary
-        info.update({
-            'episode_metrics': {
-                'steps': self.metrics.steps,
-                'rings_collected': self.metrics.rings_collected,
-                'max_rings': self.metrics.max_rings,
-                'enemies_defeated': self.metrics.enemies_defeated,
-                'distance': self.max_x,
-                'current_reward': self.metrics.current_reward,
-                'total_deaths': self.metrics.total_deaths,
-                'checkpoint_rewards': self.checkpoint_rewards
-            }
-        })
+        # Update info dictionary with metrics
+        info['episode_metrics'] = {
+            'steps': self.metrics.steps,
+            'rings_collected': self.metrics.rings_collected,
+            'max_rings': self.metrics.max_rings,
+            'enemies_defeated': self.metrics.enemies_defeated,
+            'current_reward': self.metrics.current_reward,
+            'total_deaths': self.metrics.total_deaths,
+        }
+        
+        if terminated or truncated:
+            self.metrics.on_episode_end(self.current_level)
+            info['episode_metrics'].update(self.metrics.get_training_stats())
 
         return obs, total_reward, terminated, truncated, info
 class CurriculumCallback(BaseCallback):
@@ -315,24 +315,26 @@ class MetricsCallback(BaseCallback):
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
         self.metrics_history = []
+        self.current_metrics = None
 
     def _on_step(self) -> bool:
         if self.n_calls % self.check_freq == 0:
-            # Get metrics from environment
-            env = self.training_env.envs[0]
-            if hasattr(env, 'metrics'):
-                metrics = env.metrics.get_training_stats()
-                self.metrics_history.append(metrics)
-                
-                # Log to tensorboard
-                for key, value in metrics.items():
-                    if isinstance(value, (int, float)):
-                        self.logger.record(f"metrics/{key}", value)
-                
-                # Save metrics to file
-                metrics_file = os.path.join(self.log_dir, "training_metrics.json")
-                with open(metrics_file, 'w') as f:
-                    json.dump(self.metrics_history, f, indent=4)
+            # Get info from the most recent step
+            if hasattr(self.locals, 'infos') and len(self.locals['infos']) > 0:
+                info = self.locals['infos'][0]  # Get info from first environment
+                if 'episode_metrics' in info:
+                    metrics = info['episode_metrics']
+                    self.metrics_history.append(metrics)
+                    
+                    # Log to tensorboard
+                    for key, value in metrics.items():
+                        if isinstance(value, (int, float)):
+                            self.logger.record(f"metrics/{key}", value)
+                    
+                    # Save metrics to file
+                    metrics_file = os.path.join(self.log_dir, "training_metrics.json")
+                    with open(metrics_file, 'w') as f:
+                        json.dump(self.metrics_history, f, indent=4)
         
         return True
 
