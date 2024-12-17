@@ -11,13 +11,40 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
 from datetime import datetime
 import retro
-import os
+import os   
+from gymnasium.spaces import Box
 import json
 from typing import Dict, List, Any
 import matplotlib.pyplot as plt
 import seaborn as sns
+import torch.nn as nn
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
+class CustomCNN(BaseFeaturesExtractor):
+    def __init__(self, observation_space, features_dim=516):
+        super(CustomCNN, self).__init__(observation_space, features_dim)
+        self.cnn = nn.Sequential(
+            nn.Conv2d(4, 32, kernel_size=8, stride=4),  # Adjusted input channels to 4
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        
+        # Calculate the flattened size for the fully connected layer
+        with torch.no_grad():
+            n_flatten = self.cnn(torch.zeros(1, *observation_space.shape)).shape[1]
+        
+        self.linear = nn.Sequential(
+            nn.Linear(n_flatten, features_dim),
+            nn.ReLU()
+        )
+
+    def forward(self, observations):
+        return self.linear(self.cnn(observations))
 TRAINING_LEVELS = [
     "GreenHillZone.Act1",
     "SpringYardZone.Act1",
@@ -54,6 +81,7 @@ class CurriculumManager:
         if not history:
             return 0.0
         return sum(history) / len(history)
+
 
 class SonicMetrics:
     """Clase para seguimiento de métricas durante el entrenamiento"""
@@ -99,7 +127,88 @@ class SonicMetrics:
             'level_completions': self.level_completions
         }
 
+class RightMovementBiasWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.rng = np.random.RandomState()
+    
+    def step(self, action):
+        # 50% chance of forcing right movement
 
+        if self.rng.rand() < 0.5:
+            action = 2  # Right action
+
+        # right jump action
+        elif self.rng.rand() < 0.1:
+            action = 4
+        return self.env.step(action)
+    
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
+class SonicRewardWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.metrics = SonicMetrics()
+        self.reset_metrics()
+        
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        self.reset_metrics()
+        self.metrics.reset_episode_metrics()
+        self.current_level = kwargs.get('state', TRAINING_LEVELS[0])
+        self.metrics.current_level = self.current_level
+        return obs, info
+
+    def reset_metrics(self):
+        self.previous_info = None
+        self.prev_x = 0
+        self.max_x = 0
+        self.standing_still_counter = 0
+        self.prev_score = 0
+        self.current_level = None
+        self.last_checkpoint_x = 0
+        self.checkpoint_rewards = 0
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        current_info = self.unwrapped.data.lookup_all()
+
+        # Update metrics without modifying rewards
+        current_x = current_info.get('x', 0)
+        self.metrics.steps += 1
+
+        if self.previous_info is not None:
+            prev_rings = self.previous_info.get('rings', 0)
+            current_rings = current_info.get('rings', 0)
+            rings_delta = current_rings - prev_rings
+            if rings_delta > 0:
+                self.metrics.rings_collected += rings_delta
+                self.metrics.max_rings = max(self.metrics.max_rings, current_rings)
+
+        if current_info.get('level_end_bonus', 0) > 0:
+            self.metrics.level_completions[self.current_level] += 1
+            episode_time = (datetime.now() - self.metrics.episode_start_time).total_seconds()
+            if episode_time < self.metrics.best_times[self.current_level]:
+                self.metrics.best_times[self.current_level] = episode_time
+            terminated = True
+
+        # Update info dictionary with metrics
+        info['episode_metrics'] = {
+            'steps': self.metrics.steps,
+            'rings_collected': self.metrics.rings_collected,
+            'max_rings': self.metrics.max_rings,
+            'enemies_defeated': self.metrics.enemies_defeated,
+            'current_reward': self.metrics.current_reward + reward,  # Add default reward for tracking
+            'total_deaths': self.metrics.total_deaths,
+        }
+        
+        if terminated or truncated:
+            self.metrics.on_episode_end(self.current_level)
+            info['episode_metrics'].update(self.metrics.get_training_stats())
+
+        # Return the original reward
+        return obs, reward, terminated, truncated, info
+"""
 class SonicRewardWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -149,7 +258,7 @@ class SonicRewardWrapper(gym.Wrapper):
                 custom_reward += (current_x - self.max_x) * 0.2
                 self.max_x = current_x
 
-        # Penalize standing still
+             # Penalize standing still
         if abs(x_progress) < 1:
             self.standing_still_counter += 1
             if self.standing_still_counter > 60:
@@ -194,7 +303,7 @@ class SonicRewardWrapper(gym.Wrapper):
 
         # 5. Level completion
         if current_info.get('level_end_bonus', 0) > 0:
-            custom_reward += 1000
+            custom_reward += 10000
             self.metrics.level_completions[self.current_level] += 1
             
             episode_time = (datetime.now() - self.metrics.episode_start_time).total_seconds()
@@ -228,7 +337,7 @@ class SonicRewardWrapper(gym.Wrapper):
             self.metrics.on_episode_end(self.current_level)
             info['episode_metrics'].update(self.metrics.get_training_stats())
 
-        return obs, total_reward, terminated, truncated, info
+        return obs, total_reward, terminated, truncated, info"""
 class CurriculumCallback(BaseCallback):
     def __init__(self, curriculum_manager, eval_env, check_freq=10000, verbose=1):
         super().__init__(verbose)
@@ -262,19 +371,74 @@ class CustomEvalCallback(EvalCallback):
         return super()._on_step()
     
 
-class MultiBinaryToDiscreteWrapper(gym.ActionWrapper):
+class SonicActionWrapper(gym.Wrapper):
     def __init__(self, env):
+        """
+        Wrapper to create a discrete action space for Sonic with 8 meaningful actions.
+        
+        Args:
+            env (gym.Env): The original Sonic environment
+        """
         super().__init__(env)
-        self.env = env
-        # Generate all possible actions for the MultiBinary space
-        self.discrete_actions = np.array(np.meshgrid(*[[0, 1]] * env.action_space.n)).T.reshape(-1, env.action_space.n)
-        self.action_space = gym.spaces.Discrete(len(self.discrete_actions))
-
-    def action(self, action):
-        # Map discrete action to MultiBinary action
-        return self.discrete_actions[action]
-class StochasticFrameSkip(gym.Wrapper):
-    def __init__(self, env, n=4, stickprob=0.25, exploration_prob=0.1):
+        
+        # Define the action mapping
+        self.action_space = gym.spaces.Discrete(8)
+        
+        # Action switch mapping (based on button press combinations)
+        self.action_switch = {
+            # No Operation
+            0: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            # Left
+            1: [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+            # Right
+            2: [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+            # Left, Down
+            3: [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0],
+            # Right, Down
+            4: [0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+            # Down
+            5: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            # Down, B
+            6: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            # B
+            7: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        }
+    
+    def step(self, action):
+        """
+        Convert the discrete action to the corresponding multi-binary action.
+        
+        Args:
+            action (int): Discrete action index (0-7)
+        
+        Returns:
+            tuple: Observation, reward, done, info after taking the action
+        """
+        # Convert discrete action to multi-binary action
+        multi_binary_action = self.action_switch[action]
+        
+        # Take a step in the environment with the converted action
+        return self.env.step(multi_binary_action)
+    
+    def reset(self, **kwargs):
+        """
+        Reset the environment.
+        
+        Returns:
+            observation: The initial observation after resetting
+        """
+        return self.env.reset(**kwargs)
+class ImprovedFrameSkip(gym.Wrapper):
+    def __init__(self, env, n=4, stickprob=0.1, exploration_prob=0.05):
+        """
+        A more controlled frame skipping wrapper for Sonic.
+        
+        Args:
+            env: The environment to wrap
+            n: Number of frames to skip
+            stickprob: Probability of repeating the previous action
+            exploration_prob: Probability of inserting a random action
+        """
         super().__init__(env)
         self.n = n
         self.stickprob = stickprob
@@ -287,29 +451,34 @@ class StochasticFrameSkip(gym.Wrapper):
         return self.env.reset(**kwargs)
 
     def step(self, ac):
-        # Occasional random action for exploration
-        if self.rng.rand() < self.exploration_prob:
-            ac = self.env.action_space.sample()
-        
         terminated = False
         truncated = False
         totrew = 0
+        totinfo = {}
+
         for i in range(self.n):
-            if self.curac is None:
+            # Maintain previous action with low probability
+            if self.curac is None or self.rng.rand() > self.stickprob:
                 self.curac = ac
-            elif i == 0:
-                if self.rng.rand() > self.stickprob:
-                    self.curac = ac
-            elif i == 1:
-                self.curac = ac
-            
+
+            # Occasional very brief random exploration
+            if i == 0 and self.rng.rand() < self.exploration_prob:
+                # Briefly inject a small random variation, favoring forward momentum
+                if self.rng.rand() < 0.7:  # 70% chance to keep forward direction
+                    self.curac = np.array(self.curac)
+                    # Slightly modify to maintain general direction
+                    self.curac[7] = 1   # Ensure right movement
+                else:
+                    self.curac = self.env.action_space.sample()
+
             ob, rew, terminated, truncated, info = self.env.step(self.curac)
             totrew += rew
+            totinfo = info  # Keep the last info
             
             if terminated or truncated:
                 break
-        
-        return ob, totrew, terminated, truncated, info
+
+        return ob, totrew, terminated, truncated, totinfo
 class MetricsCallback(BaseCallback):
     def __init__(self, check_freq: int, log_dir: str, verbose: int = 1):
         super().__init__(verbose)
@@ -340,70 +509,11 @@ class MetricsCallback(BaseCallback):
         
         return True
 
-class StabilizedDQN(DQN):
-    def train(self, gradient_steps: int, batch_size: int = 100) -> None:
-        # Ensure we have the optimizer
-        if not hasattr(self, "optimizer"):
-            self.optimizer = self.policy.optimizer
-            
-        losses = []
-        for _ in range(gradient_steps):
-            # Check if we need to sample new data
-            if not self._can_sample(batch_size):
-                return
-            
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
-            with torch.no_grad():
-                # Calculate next Q-values and target Q-values
-                next_q_values = self.q_net_target(replay_data.next_observations)
-                # Get the maximum Q-value along the action dimension
-                max_next_q_values, _ = next_q_values.max(dim=1, keepdim=True)
-                # Calculate target Q-values with discounted future rewards
-                target_q_values = replay_data.rewards.reshape(-1, 1) + \
-                    (1 - replay_data.dones.reshape(-1, 1)) * self.gamma * max_next_q_values
-
-            # Get current Q-values and select the ones for the actions taken
-            current_q_values = self.q_net(replay_data.observations)
-            actions_column = replay_data.actions.reshape(-1, 1)
-            current_q_values = torch.gather(current_q_values, dim=1, index=actions_column)
-
-            # Ensure shapes match
-            assert current_q_values.shape == target_q_values.shape, \
-                f"Shape mismatch: current_q_values {current_q_values.shape} vs target_q_values {target_q_values.shape}"
-            
-            # Calculate loss with properly shaped tensors
-            loss = torch.nn.functional.smooth_l1_loss(current_q_values, target_q_values)
-            
-            # Clip loss to prevent explosion
-            loss = torch.clamp(loss, -100, 100)
-            
-            losses.append(loss.item())
-            
-            self.optimizer.zero_grad()
-            loss.backward()
-            
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            
-            self.optimizer.step()
-
-        if len(losses) > 0:
-            self.logger.record("train/loss", np.mean(losses))
-            
-    def _can_sample(self, batch_size):
-        """Check if enough samples are available in the replay buffer"""
-        return bool(
-            self.replay_buffer is not None and
-            self.replay_buffer.size() > batch_size and
-            self.replay_buffer.size() >= self.learning_starts
-        )
-
-
 def make_retro(*, game, state=None, max_episode_steps=4500, **kwargs):
     if state is None:
         state = retro.State.DEFAULT
     env = retro.make(game, state, **kwargs, render_mode="rgb_array")
-    env = StochasticFrameSkip(env, n=4, stickprob=0.25)
+    env = ImprovedFrameSkip(env, n=4, stickprob=0.1, exploration_prob=0.05)
     if max_episode_steps is not None:
         env = TimeLimit(env, max_episode_steps=max_episode_steps)   
     return env
@@ -411,16 +521,31 @@ def make_retro(*, game, state=None, max_episode_steps=4500, **kwargs):
 def wrap_deepmind_retro(env):
     """Configure environment for retro games with DQN-style preprocessing"""
     env = WarpFrame(env)
-    env = ClipRewardEnv(env)
     return env
 
+class VideoRecordingCallback(BaseCallback):
+    def __init__(self, save_interval=50000, video_folder=None, verbose=1):
+        super().__init__(verbose)
+        self.save_interval = save_interval
+        self.video_folder = video_folder or get_unique_video_folder("./videos")
+        
+    def _on_step(self) -> bool:
+        # Record video every save_interval steps
+        if self.n_calls % self.save_interval == 0:
+            if hasattr(self.training_env, 'env') and hasattr(self.training_env.env, 'video_recorder'):
+                try:
+                    self.training_env.env.video_recorder.capture_frame()
+                except Exception as e:
+                    print(f"Video recording error: {e}")
+        
+        return True
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--game", default="SonicTheHedgehog-Genesis")
     parser.add_argument("--state", default="GreenHillZone.Act1")
-    parser.add_argument("--scenario", default=None)
+    parser.add_argument("--scenario", default="contest")
     parser.add_argument("--save_interval", type=int, default=50000, help="Timesteps interval to save video")
-    parser.add_argument("--timesteps", type=int, default=2_000_000)
+    parser.add_argument("--timesteps", type=int, default=1_000_000)
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--checkpoint", default=None, help="Path to checkpoint to resume training")
     return parser.parse_args()
@@ -431,22 +556,31 @@ def get_unique_video_folder(base_path):
     return os.path.join(base_path, f"videos_{timestamp}")
 
 def main():
-
+    # Parse command line arguments
     args = parse_args()
+    
     def make_env(game, state, rank):
         def _init():
+            # Create the environment
             env = make_retro(game=game, state=state)
-            env = SonicRewardWrapper(env)
+            env = SonicActionWrapper(env)
+            #env = RightMovementBiasWrapper(env)
+            #env = SonicRewardWrapper(env)
             env.current_level = state 
-            env = MultiBinaryToDiscreteWrapper(env)
             env = wrap_deepmind_retro(env)
+            
+            # Set up video recording
             video_folder = get_unique_video_folder("./videos")
             env = RecordVideo(
                 env,
                 video_folder=video_folder,
-                name_prefix="training_run",
-                episode_trigger=lambda episode_id: episode_id % args.save_interval == 0
+                name_prefix="sonic_training",
+                
+                episode_trigger=lambda episode_id: episode_id % 50 == 0,  # Record every 50 episode for debugging
+                video_length=0  # Record full episodes
             )
+
+            # Record episode statistics
             env = RecordEpisodeStatistics(env)
             env = Monitor(env, f"./logs/train_{rank}")
             return env
@@ -457,18 +591,19 @@ def main():
     os.makedirs("models", exist_ok=True)
 
     # Initialize curriculum manager
-    curriculum_manager = CurriculumManager()
+    #curriculum_manager = CurriculumManager()
     
-    # Create environments
-    env = SubprocVecEnv([make_env(args.game, curriculum_manager.get_current_level(), i) 
+    # Create training environments
+    env = SubprocVecEnv([make_env(args.game, args.state, i) 
                          for i in range(args.num_envs)])
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
-    ''''''
+    
     # Create evaluation environment
-    eval_env = SubprocVecEnv([make_env(args.game, curriculum_manager.get_current_level(), 999)])
+    eval_env = SubprocVecEnv([make_env(args.game, args.state, 999)])
     eval_env = VecFrameStack(eval_env, n_stack=4)
     eval_env = VecTransposeImage(eval_env)
+    
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=50000 // args.num_envs,
@@ -476,6 +611,10 @@ def main():
         name_prefix="sonic_dqn"
     )
 
+    video_callback = VideoRecordingCallback(
+        save_interval=args.save_interval, 
+        video_folder=get_unique_video_folder("./videos")
+    )
     metrics_callback = MetricsCallback(
         check_freq=1000,
         log_dir="./logs/metrics/"
@@ -488,49 +627,61 @@ def main():
         eval_freq=10000,
         n_eval_episodes=5,
         deterministic=True
+
     )
+    """    
     curriculum_callback = CurriculumCallback(
         curriculum_manager,
         eval_env,
         check_freq=10000
+    )"""
+
+    tensorboard_log_dir = os.path.join(
+    "./logs/tensorboard/", 
+    datetime.now().strftime("%Y%m%d_%H%M%S")
     )
+
+    # Load or create the model
     if args.checkpoint is not None:
         print(f"Cargando el modelo desde {args.checkpoint}...")
-        model = StabilizedDQN.load(args.checkpoint, env=env)
+        model = DQN.load(args.checkpoint, env=env)
     else:
         print("Creando un nuevo modelo...")
-        model = StabilizedDQN(
+        print(env.observation_space)
+        policy_kwargs = dict(
+            features_extractor_class=CustomCNN,
+            features_extractor_kwargs=dict(features_dim=516),
+            net_arch=[]  # No additional layers, architecture is fully defined in the CustomCNN
+        )
+        model = DQN(
             policy="CnnPolicy",
             env=env,
-            learning_rate=1e-6,
-            buffer_size=30000,
+            learning_rate=1e-4,
+            buffer_size=50000,
             learning_starts=1000,
-            batch_size=32,
-            tau=0.2,
-            gamma=0.99,
-            train_freq=8,
+            batch_size=64,
+            tau=0.9,
+            gamma=0.95,
+            train_freq=4,
             gradient_steps=1,
-            target_update_interval=500,
+            target_update_interval=10000,
             exploration_fraction=0.3,
             exploration_initial_eps=1.0,
-            exploration_final_eps=0.02,
-            max_grad_norm=0.1,
+            exploration_final_eps=0.01,
+            max_grad_norm=0.4,
             verbose=1,
-            tensorboard_log="./logs/tensorboard/",
+            tensorboard_log=tensorboard_log_dir,
             device="cuda" if torch.cuda.is_available() else "cpu",
-            policy_kwargs=dict(
-                features_extractor_kwargs=dict(features_dim=128),
-                net_arch=[64, 32],
-                normalize_images=True
-            )
+            policy_kwargs=policy_kwargs
         )
+    
     # Train the model
     model.learn(
         total_timesteps=args.timesteps,
         reset_num_timesteps=False,
-        callback=[checkpoint_callback, eval_callback, metrics_callback, curriculum_callback],
+        callback=[checkpoint_callback, eval_callback, metrics_callback],
         log_interval=50,
-        progress_bar = True
+        progress_bar=True
     )
 
     # Save the final model
