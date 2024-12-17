@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from gymnasium.wrappers.time_limit import TimeLimit
 from stable_baselines3 import DQN
-from stable_baselines3.common.atari_wrappers import ClipRewardEnv, WarpFrame
+from stable_baselines3.common.atari_wrappers import WarpFrame
 from gymnasium.wrappers import RecordEpisodeStatistics, RecordVideo
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecFrameStack, VecTransposeImage, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -15,13 +15,14 @@ import os
 from gymnasium.spaces import Box
 import json
 from typing import Dict, List, Any
-import matplotlib.pyplot as plt
-import seaborn as sns
 import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
-
+#Clase custom CNN
 class CustomCNN(BaseFeaturesExtractor):
+    """  La CNN personalizada para Sonic  utiliza 3 capas convolucionales seguidas de una capa lineal. 
+    La CNN toma como entrada una imagen de 4 canales (RGB + escala de grises) y produce un vector de características de 516 dimensiones.
+    """
     def __init__(self, observation_space, features_dim=516):
         super(CustomCNN, self).__init__(observation_space, features_dim)
         self.cnn = nn.Sequential(
@@ -519,7 +520,6 @@ def make_retro(*, game, state=None, max_episode_steps=4500, **kwargs):
     return env
 
 def wrap_deepmind_retro(env):
-    """Configure environment for retro games with DQN-style preprocessing"""
     env = WarpFrame(env)
     return env
 
@@ -548,6 +548,7 @@ def parse_args():
     parser.add_argument("--timesteps", type=int, default=1_000_000)
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--checkpoint", default=None, help="Path to checkpoint to resume training")
+    parser.add_argument("--test_model", default=False, help="Test the model instead of training")
     return parser.parse_args()
 
 def get_unique_video_folder(base_path):
@@ -570,19 +571,20 @@ def main():
             env = wrap_deepmind_retro(env)
             
             # Set up video recording
-            video_folder = get_unique_video_folder("./videos")
-            env = RecordVideo(
-                env,
-                video_folder=video_folder,
-                name_prefix="sonic_training",
-                
-                episode_trigger=lambda episode_id: episode_id % 50 == 0,  # Record every 50 episode for debugging
-                video_length=0  # Record full episodes
-            )
+            if(args.test_model != True):
+                video_folder = get_unique_video_folder("./videos")
+                env = RecordVideo(
+                    env,
+                    video_folder=video_folder,
+                    name_prefix="sonic_training",
+                    
+                    episode_trigger=lambda episode_id: episode_id % 50 == 0,  # Record every 50 episode for debugging
+                    video_length=0  # Record full episodes
+                )
 
-            # Record episode statistics
-            env = RecordEpisodeStatistics(env)
-            env = Monitor(env, f"./logs/train_{rank}")
+                # Record episode statistics
+                env = RecordEpisodeStatistics(env)
+                env = Monitor(env, f"./logs/train_{rank}")
             return env
         return _init
     
@@ -598,11 +600,11 @@ def main():
                          for i in range(args.num_envs)])
     env = VecFrameStack(env, n_stack=4)
     env = VecTransposeImage(env)
-    
-    # Create evaluation environment
-    eval_env = SubprocVecEnv([make_env(args.game, args.state, 999)])
-    eval_env = VecFrameStack(eval_env, n_stack=4)
-    eval_env = VecTransposeImage(eval_env)
+    if(args.test_model != True):
+        # Create evaluation environment
+        eval_env = SubprocVecEnv([make_env(args.game, args.state, 999)])
+        eval_env = VecFrameStack(eval_env, n_stack=4)
+        eval_env = VecTransposeImage(eval_env)
     
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
@@ -675,19 +677,50 @@ def main():
             policy_kwargs=policy_kwargs
         )
     
-    # Train the model
-    model.learn(
-        total_timesteps=args.timesteps,
-        reset_num_timesteps=False,
-        callback=[checkpoint_callback, eval_callback, metrics_callback],
-        log_interval=50,
-        progress_bar=True
-    )
 
-    # Save the final model
-    model.save("./models/sonic_dqn_final")
-    env.close()
-    eval_env.close()
+    if(args.test_model):
+        print(f"Nivel: {args.state}")
+        max_steps = 4000
+        episodios_totales = 100
+        for episode in range(episodios_totales):
+            obs = env.reset()
+            #print(f'Ejecutando episodio {episode + 1}...')
+
+            maxDist = 0
+            time_out = True
+            for i in range(max_steps):
+                action, _ = model.predict(obs, deterministic=False)  # Modo de predicción determinístico
+                obs, reward, done, info = env.step(action)
+                
+                if info[0]['x'] > maxDist: maxDist = info[0]['x']
+                # Revisar si se ha ganado el nivel (detiene el episodio)
+                if info[0]['level_end_bonus']:
+                    print(f"Episodio {episode + 1}: VICTORIA alcanzada! - Tiempo = ({(266 * i) / 4000} segundos)")
+                    time_out = False
+                    break
+                if info[0]['lives'] < 1:
+                    print(f"Episodio {episode + 1}: Muerte")
+                    time_out = False
+                    break
+            
+            if time_out: print(f'Episodio {episode +1} tiempo máximo excedido')
+            print(f'distancia maxima = {maxDist}')
+
+        env.close()
+    else:
+        # Train the model
+        model.learn(
+            total_timesteps=args.timesteps,
+            reset_num_timesteps=False,
+            callback=[checkpoint_callback, eval_callback, metrics_callback],
+            log_interval=50,
+            progress_bar=True
+        )
+
+        # Save the final model
+        model.save("./models/sonic_dqn_final")
+        env.close()
+        eval_env.close()
 
 if __name__ == "__main__":
     main()
